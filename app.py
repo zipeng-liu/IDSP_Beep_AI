@@ -7,6 +7,8 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 import os
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
 # Step 1: Data Processing
 def process_crime_data(input_file='data/crime_data.csv', output_file='data/processed_crime_data.csv'):
     print("Processing crime data...")
@@ -111,4 +113,5 @@ def get_safe_route():
         return jsonify({"error": f"Invalid format for 'start' or 'end' coordinates: {ve}"}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
