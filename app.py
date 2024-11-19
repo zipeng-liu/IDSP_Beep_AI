@@ -113,5 +113,5 @@ def get_safe_route():
         return jsonify({"error": f"Invalid format for 'start' or 'end' coordinates: {ve}"}), 400
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
+    port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
