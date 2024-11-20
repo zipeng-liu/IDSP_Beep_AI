@@ -1,117 +1,83 @@
-from flask import Flask, request, jsonify
+import json
 import tensorflow as tf
-import pandas as pd
 import numpy as np
-from pyproj import Transformer
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
-import os
+import logging
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+logging.basicConfig(level=logging.INFO)
 
-# Step 1: Data Processing
-def process_crime_data(input_file='data/crime_data.csv', output_file='data/processed_crime_data.csv'):
-    print("Processing crime data...")
-    current_crs = "epsg:26910"  # Example projection; adjust as needed
-    target_crs = "epsg:4326"    # WGS84 (latitude/longitude)
+# Load the trained model
+model_path = 'models/safety_score_model.h5'
+model = tf.keras.models.load_model(model_path)
+logging.info(f"Model loaded from {model_path}")
 
-    transformer = Transformer.from_crs(current_crs, target_crs, always_xy=True)
+def calculate_safe_route(start_coords, end_coords):
+    """Calculate a safe route between two points."""
+    route = [start_coords]
+    steps = 10
 
-    # Load the CSV data
-    data = pd.read_csv(input_file)
+    for i in range(1, steps):
+        lat = start_coords[0] + (end_coords[0] - start_coords[0]) * i / steps
+        lon = start_coords[1] + (end_coords[1] - start_coords[1]) * i / steps
+        safety_score = model.predict(np.array([[lat, lon]]))[0][0]
+        logging.info(f"Step {i}: ({lat}, {lon}) - Safety score: {safety_score}")
 
-    # Convert X, Y to latitude and longitude
-    def convert_to_latlon(x, y):
-        lon, lat = transformer.transform(x, y)
-        return lat, lon
+        if safety_score < 0.5:  # Threshold for safety
+            route.append([lat, lon])
 
-    data[['latitude', 'longitude']] = data.apply(lambda row: pd.Series(convert_to_latlon(row['X'], row['Y'])), axis=1)
-    data['crime_count'] = 1  # Each row represents an incident
+    route.append(end_coords)
+    return route
 
-    # Group by latitude and longitude to calculate crime density
-    crime_density = data.groupby(['latitude', 'longitude']).size().reset_index(name='crime_count')
-
-    # Normalize crime counts
-    scaler = MinMaxScaler()
-    crime_density['normalized_crime_count'] = scaler.fit_transform(crime_density[['crime_count']])
-
-    # Save the processed data
-    crime_density.to_csv(output_file, index=False)
-    print(f"Processed data saved to {output_file}")
-    return crime_density
-
-# Step 2: Model Training
-def train_model(data, model_path='models/safety_score_model.h5'):
-    print("Training model...")
-    X = data[['latitude', 'longitude']].values
-    y = data['normalized_crime_count'].values
-
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Define and compile the model
-    model = tf.keras.Sequential([
-        tf.keras.layers.Dense(64, activation='relu', input_shape=(2,)),
-        tf.keras.layers.Dense(32, activation='relu'),
-        tf.keras.layers.Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mean_squared_error', metrics=['mae'])
-
-    # Train the model
-    model.fit(X_train, y_train, epochs=50, batch_size=32, validation_split=0.1)
-
-    # Save the model
-    model.save(model_path)
-    print(f"Model training complete and saved to {model_path}")
-    return model
-
-# Check if the processed data and model already exist
-if not os.path.exists('data/processed_crime_data.csv'):
-    processed_data = process_crime_data()
-else:
-    processed_data = pd.read_csv('data/processed_crime_data.csv')
-
-if not os.path.exists('models/safety_score_model.h5'):
-    model = train_model(processed_data)
-else:
-    print("Loading existing model...")
-    model = tf.keras.models.load_model('models/safety_score_model.h5')
-
-# Step 3: Flask API
-app = Flask(__name__)
-
-@app.route('/getSafeRoute', methods=['GET'])
-def get_safe_route():
-    start = request.args.get('start')  # e.g., "49.2827,-123.1207"
-    end = request.args.get('end')      # e.g., "49.2876,-123.1181"
-
-    # Validate input
-    if not start or not end:
-        return jsonify({"error": "Missing 'start' or 'end' query parameter"}), 400
-
+def lambda_handler(event, context):
+    """AWS Lambda entry point."""
     try:
-        start_coords = [float(x) for x in start.split(',')]
-        end_coords = [float(x) for x in end.split(',')]
+        logging.info(f"Received event: {event}")
 
-        # Generate route with interpolation and safety score prediction
-        route = [start_coords]
-        steps = 10  # Number of interpolation points
+        # Extract query parameters
+        query_params = event.get('queryStringParameters', {})
+        start = query_params.get('start')
+        end = query_params.get('end')
 
-        for i in range(1, steps):
-            lat = start_coords[0] + (end_coords[0] - start_coords[0]) * i / steps
-            lon = start_coords[1] + (end_coords[1] - start_coords[1]) * i / steps
-            safety_score = model.predict(np.array([[lat, lon]]))[0][0]
+        if not start or not end:
+            return {
+                'statusCode': 400,
+                'body': json.dumps({"error": "Missing 'start' or 'end' query parameter"})
+            }
 
-            # Only add to the route if the safety score is below a certain threshold
-            if safety_score < 0.5:  # Adjust threshold as needed
-                route.append([lat, lon])
+        try:
+            start_coords = [float(x) for x in start.split(',')]
+            end_coords = [float(x) for x in end.split(',')]
 
-        route.append(end_coords)
-        return jsonify({"route": route})
+            # Calculate the safe route
+            route = calculate_safe_route(start_coords, end_coords)
 
-    except ValueError as ve:
-        return jsonify({"error": f"Invalid format for 'start' or 'end' coordinates: {ve}"}), 400
+            return {
+                'statusCode': 200,
+                'body': json.dumps({"route": route}),
+                'headers': {'Content-Type': 'application/json'}
+            }
 
+        except ValueError as ve:
+            logging.error(f"Invalid input format: {ve}")
+            return {
+                'statusCode': 400,
+                'body': json.dumps({"error": f"Invalid format for 'start' or 'end' coordinates: {ve}"})
+            }
+
+    except Exception as e:
+        logging.error(f"An error occurred: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({"error": "Internal server error"}),
+            'headers': {'Content-Type': 'application/json'}
+        }
+
+# Local Testing (Optional)
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+    # Simulate AWS Lambda locally
+    sample_event = {
+        "queryStringParameters": {
+            "start": "49.2827,-123.1207",
+            "end": "49.2870,-123.1121"
+        }
+    }
+    print(lambda_handler(sample_event, None))

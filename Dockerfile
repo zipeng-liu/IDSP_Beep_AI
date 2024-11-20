@@ -1,18 +1,14 @@
-# Use the official Python image as a base
-FROM python:3.10-slim
+# Use the official AWS Lambda Python base image
+FROM public.ecr.aws/lambda/python:3.12
 
-# Set the working directory
-WORKDIR /app
+# Set the working directory to the Lambda task root
+WORKDIR ${LAMBDA_TASK_ROOT}
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code
+# Copy the application files
 COPY . .
 
-# Expose the port that the app will run on
-EXPOSE 8080
+# Install required packages
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app", "--timeout", "120"]
+# Set the command to run the Flask app using AWS Lambda runtime
+CMD ["app.lambda_handler"]
